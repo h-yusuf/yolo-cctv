@@ -4,6 +4,10 @@ Deteksi dan baca plat nomor (ALPR) dari stream CCTV publik memakai YOLO + [fast-
 
 Repo: https://github.com/h-yusuf/yolo-cctv
 
+![Demo: CCTV Karangayu ke timur, Semarang](docs/demo.jpg)
+
+*Live di CCTV publik Semarang "Karangayu ke timur". Mode `--privacy`: plat di-blur dan angka disensor di overlay. Data di database tetap utuh.*
+
 ```
 stream CCTV (HLS/RTSP/file)
   → YOLO11n + ByteTrack        deteksi + tracking kendaraan
@@ -68,6 +72,7 @@ Opsi lain (lihat `uv run alpr.py -h`):
 | Flag | Default | Fungsi |
 |---|---|---|
 | `--stride` | 3 | Live: proses tiap frame ke-N (25 fps / 3 ≈ 8 fps) |
+| `--privacy` | off | Overlay saja: blur plat + sensor angka, untuk demo publik. Database tetap berisi plat asli |
 | `--min-width` | 100 | Lewati OCR untuk kendaraan lebih sempit dari ini (px) |
 | `--min-votes` | 2 | Jumlah bacaan sama yang dibutuhkan untuk menyimpan plat |
 | `--min-conf` | 0.7 | Rata-rata confidence OCR minimum |

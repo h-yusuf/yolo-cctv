@@ -60,6 +60,7 @@ class Track:
         self.votes: Counter[str] = Counter()
         self.score: Counter[str] = Counter()
         self.crops: dict[str, tuple[float, np.ndarray | None]] = {}  # plate -> (conf, best crop of that plate)
+        self.plate_box: tuple[int, int, int, int] | None = None  # last plate box, relative to the vehicle
 
     def add(self, plate: str, conf: float, crop: np.ndarray | None = None):
         self.votes[plate] += 1
@@ -127,8 +128,9 @@ def is_duplicate(plate: str, now: float, last_saved: dict[str, float], window: f
                for p, ts in last_saved.items())
 
 
-def ocr_vehicle(alpr: ALPR, crop: np.ndarray) -> tuple[str, float, np.ndarray] | None:
-    """Best Indonesian-looking plate read in a vehicle crop: (plate, mean char confidence, plate crop)."""
+def ocr_vehicle(alpr: ALPR, crop: np.ndarray):
+    """Best Indonesian-looking plate read in a vehicle crop:
+    (plate, mean char confidence, plate crop, plate box relative to the vehicle crop) or None."""
     best = None
     for r in alpr.predict(crop):
         if r.ocr is None:
@@ -137,8 +139,23 @@ def ocr_vehicle(alpr: ALPR, crop: np.ndarray) -> tuple[str, float, np.ndarray] |
         conf = float(np.mean(r.ocr.confidence))
         if plate and (best is None or conf > best[1]):
             b = r.detection.bounding_box
-            best = (plate, conf, crop[max(b.y1, 0):b.y2, max(b.x1, 0):b.x2].copy())
+            box = (max(b.x1, 0), max(b.y1, 0), b.x2, b.y2)
+            best = (plate, conf, crop[box[1]:box[3], box[0]:box[2]].copy(), box)
     return best
+
+
+def mask_plate(plate: str) -> str:
+    """Privacy mode: hide the digits, keep region and suffix letters (H1234AB -> H****AB)."""
+    return re.sub(r"\d", "*", plate)
+
+
+def pixelate(img: np.ndarray, x1: int, y1: int, x2: int, y2: int, block: int = 6):
+    x1, y1, x2, y2 = max(x1, 0), max(y1, 0), min(x2, img.shape[1]), min(y2, img.shape[0])
+    roi = img[y1:y2, x1:x2]
+    if roi.size:
+        h, w = roi.shape[:2]
+        small = cv2.resize(roi, (max(1, w // block), max(1, h // block)))
+        img[y1:y2, x1:x2] = cv2.resize(small, (w, h), interpolation=cv2.INTER_NEAREST)
 
 
 def draw_corners(img, x1, y1, x2, y2, color, t, k=0.25):
@@ -148,7 +165,7 @@ def draw_corners(img, x1, y1, x2, y2, color, t, k=0.25):
         cv2.line(img, (x, y), (x, y + dy * ly), color, t)
 
 
-def draw_panel(img, recent: list[tuple[str, np.ndarray | None]], s: float):
+def draw_panel(img, recent: list[tuple[str, np.ndarray | None]], s: float, privacy: bool = False):
     """Left-side gallery of the latest finalized plates (crop + text)."""
     w, row = int(300 * s), int(110 * s)
     h = min(img.shape[0], row * len(recent) + int(10 * s))
@@ -158,8 +175,12 @@ def draw_panel(img, recent: list[tuple[str, np.ndarray | None]], s: float):
         if crop is not None and crop.size:
             ch = int(60 * s)
             cw = min(w - int(20 * s), int(crop.shape[1] * ch / crop.shape[0]))
-            img[y:y + ch, int(10 * s):int(10 * s) + cw] = cv2.resize(crop, (cw, ch))
-        cv2.putText(img, plate, (int(10 * s), y + int(95 * s)), cv2.FONT_HERSHEY_SIMPLEX, 0.9 * s, (255, 255, 255), max(1, int(2 * s)))
+            x = int(10 * s)
+            img[y:y + ch, x:x + cw] = cv2.resize(crop, (cw, ch))
+            if privacy:
+                pixelate(img, x, y, x + cw, y + ch, block=max(4, cw // 12))
+        cv2.putText(img, mask_plate(plate) if privacy else plate, (int(10 * s), y + int(95 * s)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.9 * s, (255, 255, 255), max(1, int(2 * s)))
 
 
 def main():
@@ -184,6 +205,7 @@ def main():
     ap.add_argument("--dedupe-sec", type=float, default=60, help="skip a plate already saved within this window (track id switches)")
     ap.add_argument("--lost-sec", type=float, default=2.0, help="track unseen this long = finished")
     ap.add_argument("--stride", type=int, default=3, help="live only: process every Nth frame (25fps / 3 = ~8fps)")
+    ap.add_argument("--privacy", action="store_true", help="overlay only: blur plates, mask digits (for public demos; DB unchanged)")
     args = ap.parse_args()
     if not args.source:
         ap.error("no source: set CCTV_URL in .env or pass --source")
@@ -263,11 +285,19 @@ def main():
                         t.last_ocr = now
                         hit = ocr_vehicle(alpr, frame[y1:y2, x1:x2])
                         if hit:
-                            t.add(*hit)
+                            t.add(*hit[:3])
+                            t.plate_box = hit[3]
+                    if vis is not None and args.privacy and t.plate_box:
+                        # ponytail: reuses the last OCR plate box relative to the vehicle; fine for slow
+                        # traffic at the stop line, plates of vehicles never OCR'd stay unblurred.
+                        px1, py1, px2, py2 = t.plate_box
+                        pad = int(0.3 * (py2 - py1))
+                        pixelate(vis, x1 + px1 - pad, y1 + py1 - pad, x1 + px2 + pad, y1 + py2 + pad)
                     if vis is not None and in_zone:
                         draw_corners(vis, x1, y1, x2, y2, (255, 160, 0), max(2, int(3 * s)))
                         if t.score:
-                            cv2.putText(vis, t.score.most_common(1)[0][0], (x1, y1 - int(10 * s)),
+                            label = t.score.most_common(1)[0][0]
+                            cv2.putText(vis, mask_plate(label) if args.privacy else label, (x1, y1 - int(10 * s)),
                                         cv2.FONT_HERSHEY_SIMPLEX, 1.0 * s, (0, 230, 255), max(2, int(3 * s)))
 
             for tid in [tid for tid, t in tracks.items() if now - t.last_seen > args.lost_sec]:
@@ -279,7 +309,7 @@ def main():
                     cv2.fillPoly(overlay, [zone], (0, 200, 255))
                     vis = cv2.addWeighted(overlay, 0.15, vis, 0.85, 0)
                     cv2.polylines(vis, [zone], True, (0, 200, 255), max(2, int(2 * s)))
-                draw_panel(vis, recent, s)
+                draw_panel(vis, recent, s, args.privacy)
                 dt = time.time() - t0
                 fps_smooth = 0.9 * fps_smooth + 0.1 / dt if fps_smooth else 1 / dt
                 cv2.putText(vis, f"{fps_smooth:.1f} FPS", (vis.shape[1] - int(250 * s), int(50 * s)),

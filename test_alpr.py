@@ -2,7 +2,7 @@ import os
 import tempfile
 from pathlib import Path
 
-from alpr import Track, is_duplicate, load_env, normalize
+from alpr import Track, is_duplicate, load_env, mask_plate, normalize
 
 
 def test_load_env():
@@ -24,6 +24,7 @@ def test_normalize():
     assert normalize("T7111EO0") is None  # digit after suffix
     assert normalize("K12345A") is None  # 5 digits
     assert normalize(None) is None
+    assert mask_plate("H1234AB") == "H****AB"
 
 
 def test_votes():
