@@ -44,6 +44,19 @@ def load_env(path: Path = Path(__file__).with_name(".env")):
             os.environ.setdefault(key.strip(), value.strip().strip("\"'"))
 
 
+AUTO_ZONE = (0.25, 0.85)  # auto zone: full-width band from 25% to 85% of the frame height
+
+
+def parse_zone(spec: str | None, width: int, height: int) -> np.ndarray:
+    """ZONE "auto" (or empty) -> centre band of the frame; "x,y x,y ..." -> that polygon (manual).
+    ponytail: auto is a fixed band, not learned from where plates are actually readable; set a
+    manual zone when the band misses the lane or covers an on-screen text overlay."""
+    if not spec or spec.strip().lower() == "auto":
+        top, bottom = int(height * AUTO_ZONE[0]), int(height * AUTO_ZONE[1])
+        return np.array([[0, top], [width, top], [width, bottom], [0, bottom]], np.int32)
+    return np.array([[int(v) for v in p.split(",")] for p in spec.split()], np.int32)
+
+
 def normalize(text: str | None) -> str | None:
     """Uppercase, drop non-alphanumerics, return None unless it looks like an Indonesian plate."""
     plate = re.sub(r"[^A-Z0-9]", "", (text or "").upper())
@@ -187,8 +200,8 @@ def main():
     load_env()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--source", default=os.environ.get("CCTV_URL"), help="HLS/RTSP URL or video file (env CCTV_URL)")
-    ap.add_argument("--zone", default=os.environ.get("ZONE") or None,
-                    help='polygon "x,y x,y ..." in source pixels; OCR only runs inside (env ZONE, empty = whole frame)')
+    ap.add_argument("--zone", default=os.environ.get("ZONE") or "auto",
+                    help='"auto" = centre band, or manual polygon "x,y x,y ..." in source pixels; OCR only runs inside (env ZONE)')
     ap.add_argument("--db", default="out/plates.db")
     ap.add_argument("--snapshots", default="out/snapshots")
     ap.add_argument("--save", help="write annotated video to this .mp4")
@@ -210,7 +223,7 @@ def main():
     if not args.source:
         ap.error("no source: set CCTV_URL in .env or pass --source")
 
-    zone = np.array([[int(v) for v in p.split(",")] for p in args.zone.split()], np.int32) if args.zone else None
+    zone = None  # built from the first frame, auto mode needs the frame size
     device = "mps" if torch.backends.mps.is_available() else "cuda" if torch.cuda.is_available() else "cpu"
     yolo = YOLO(args.vehicle_model)
     alpr = ALPR(detector_model=args.plate_model, ocr_model=args.ocr_model)
@@ -270,6 +283,10 @@ def main():
                 break
             now = time.time() if live else start + frames / fps
             frames += 1
+            if zone is None:
+                zone = parse_zone(args.zone, frame.shape[1], frame.shape[0])
+                mode = "auto" if args.zone.strip().lower() == "auto" else "manual"
+                print(f"zone ({mode}, {frame.shape[1]}x{frame.shape[0]}): {' '.join(f'{x},{y}' for x, y in zone)}", flush=True)
 
             r = yolo.track(frame, persist=True, tracker="bytetrack.yaml", imgsz=args.imgsz,
                            classes=list(VEHICLES), conf=0.3, device=device, verbose=False)[0]
@@ -280,7 +297,7 @@ def main():
                 for (x1, y1, x2, y2), tid, cls in zip(r.boxes.xyxy.int().tolist(), r.boxes.id.int().tolist(), r.boxes.cls.int().tolist()):
                     t = tracks.setdefault(tid, Track(VEHICLES[cls], now))
                     t.last_seen = now
-                    in_zone = zone is None or cv2.pointPolygonTest(zone, ((x1 + x2) / 2, y2), False) >= 0
+                    in_zone = cv2.pointPolygonTest(zone, ((x1 + x2) / 2, y2), False) >= 0
                     if in_zone and x2 - x1 >= args.min_width and now - t.last_ocr >= args.ocr_interval:
                         t.last_ocr = now
                         hit = ocr_vehicle(alpr, frame[y1:y2, x1:x2])
@@ -304,11 +321,10 @@ def main():
                 finish(tid, tracks.pop(tid))
 
             if vis is not None:
-                if zone is not None:
-                    overlay = vis.copy()
-                    cv2.fillPoly(overlay, [zone], (0, 200, 255))
-                    vis = cv2.addWeighted(overlay, 0.15, vis, 0.85, 0)
-                    cv2.polylines(vis, [zone], True, (0, 200, 255), max(2, int(2 * s)))
+                overlay = vis.copy()
+                cv2.fillPoly(overlay, [zone], (0, 200, 255))
+                vis = cv2.addWeighted(overlay, 0.15, vis, 0.85, 0)
+                cv2.polylines(vis, [zone], True, (0, 200, 255), max(2, int(2 * s)))
                 draw_panel(vis, recent, s, args.privacy)
                 dt = time.time() - t0
                 fps_smooth = 0.9 * fps_smooth + 0.1 / dt if fps_smooth else 1 / dt

@@ -2,7 +2,15 @@ import os
 import tempfile
 from pathlib import Path
 
-from alpr import Track, is_duplicate, load_env, mask_plate, normalize
+from alpr import Track, is_duplicate, load_env, mask_plate, normalize, parse_zone
+
+
+def test_parse_zone():
+    band = [[0, 180], [1280, 180], [1280, 612], [0, 612]]  # 25%..85% of 720
+    assert parse_zone("auto", 1280, 720).tolist() == band
+    assert parse_zone(" AUTO ", 1280, 720).tolist() == band
+    assert parse_zone("", 1280, 720).tolist() == band
+    assert parse_zone("0,560 2688,560 2688,1150", 2688, 1520).tolist() == [[0, 560], [2688, 560], [2688, 1150]]
 
 
 def test_load_env():
@@ -51,6 +59,7 @@ def test_dedupe():
 
 if __name__ == "__main__":
     test_load_env()
+    test_parse_zone()
     test_normalize()
     test_votes()
     test_dedupe()

@@ -38,15 +38,28 @@ Isi `.env`:
 | Variabel | Isi |
 |---|---|
 | `CCTV_URL` | URL stream (`.m3u8` / `rtsp://`) atau file video |
-| `ZONE` | Poligon `x,y x,y ...` (piksel resolusi asli). Kosong = seluruh frame |
+| `ZONE` | `auto` (default) atau poligon manual `x,y x,y ...` |
 
 Ganti kamera tanpa edit `.env`:
 
 ```bash
-CCTV_URL=https://example.com/cam/index.m3u8 ZONE= uv run alpr.py --show
+CCTV_URL=https://example.com/cam/index.m3u8 uv run alpr.py --show
 ```
 
-`ZONE` beda tiap kamera. Taruh di area plat paling besar, biasanya dekat garis stop. Ambil satu frame buat ukur koordinatnya:
+### Zona
+
+OCR cuma jalan buat kendaraan yang titik bawahnya ada di dalam zona.
+
+- **Auto** (`ZONE=auto` atau kosong): pita selebar frame dari 25% sampai 85% tinggi frame. Ikut resolusi kamera, jadi bisa langsung dipakai di kamera mana aja.
+- **Manual** (`ZONE=0,560 2688,560 2688,1150 0,1150`): poligon dalam piksel resolusi asli. Pakai ini kalau zona auto kena teks overlay kamera atau lajurnya nggak pas.
+
+Zona yang dipakai di-print waktu start, jadi tinggal copy hasil auto lalu geser angkanya:
+
+```
+zone (auto, 1280x720): 0,180 1280,180 1280,612 0,612
+```
+
+Buat ukur koordinat manual, ambil satu frame dulu:
 
 ```bash
 ffmpeg -i "$CCTV_URL" -frames:v 1 frame.jpg
