@@ -1,0 +1,10 @@
+[project]
+name = "yolo-cctv"
+version = "0.1.0"
+description = "License plate recognition (ALPR) on public CCTV streams with YOLO + fast-alpr"
+requires-python = ">=3.12"
+dependencies = [
+    "fast-alpr[onnx]>=0.4.0",
+    "lap>=0.5.12",
+    "ultralytics>=8.4.192",
+]
