@@ -4,7 +4,7 @@ Baca plat nomor kendaraan dari CCTV publik pakai YOLO + [fast-alpr](https://gith
 
 ![demo](docs/demo.jpg)
 
-CCTV Karangayu ke timur, Semarang. Plat sengaja di-blur.
+Demo CCTV Karangayu ke timur, Semarang.
 
 ## Cara kerja
 
